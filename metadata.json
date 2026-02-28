@@ -1,0 +1,5 @@
+{
+  "name": "Comptage mco",
+  "description": "Une application de comptage intuitive avec gestion de tableaux multiples, mode nuit, verrouillage d'édition et un clavier virtuel intégré pour une saisie rapide.",
+  "requestFramePermissions": []
+}
