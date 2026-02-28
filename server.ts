@@ -61,47 +61,65 @@ seedAdmin();
 
 // Auth Routes
 app.post('/api/auth/register', async (req, res) => {
-  const { email, password, companyName, accountType, mobile } = req.body;
-  
-  const { data: existingUser } = await supabase.from('users').select('id').eq('email', email).single();
-  if (existingUser) {
-    return res.status(400).json({ error: 'Email déjà utilisé' });
+  try {
+    const { email, password, companyName, accountType, mobile } = req.body;
+    
+    if (!supabaseUrl || supabaseUrl.includes('placeholder')) {
+      return res.status(500).json({ error: 'Le serveur Supabase n\'est pas configuré. Veuillez ajouter SUPABASE_URL et SUPABASE_ANON_KEY dans les paramètres.' });
+    }
+
+    const { data: existingUser } = await supabase.from('users').select('id').eq('email', email).single();
+    if (existingUser) {
+      return res.status(400).json({ error: 'Email déjà utilisé' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const user = { 
+      id: Date.now().toString(), 
+      email, 
+      password_hash: passwordHash, 
+      company_name: companyName, 
+      account_type: accountType || 'personal',
+      role: 'user',
+      created_at: Date.now(),
+      subscription_end: Date.now() + 30 * 60 * 1000,
+      mobile
+    };
+
+    const { error } = await supabase.from('users').insert([user]);
+    if (error) throw error;
+    
+    const token = jwt.sign({ userId: user.id }, JWT_SECRET);
+    const { password_hash, ...userWithoutPass } = user;
+    res.json({ token, user: userWithoutPass });
+  } catch (err: any) {
+    console.error('Register Error:', err);
+    res.status(500).json({ error: err.message || 'Erreur lors de l\'inscription' });
   }
-
-  const passwordHash = await bcrypt.hash(password, 10);
-  const user = { 
-    id: Date.now().toString(), 
-    email, 
-    password_hash: passwordHash, 
-    company_name: companyName, 
-    account_type: accountType || 'personal',
-    role: 'user',
-    created_at: Date.now(),
-    subscription_end: Date.now() + 30 * 60 * 1000,
-    mobile
-  };
-
-  const { error } = await supabase.from('users').insert([user]);
-  if (error) return res.status(500).json({ error: error.message });
-  
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET);
-  const { password_hash, ...userWithoutPass } = user;
-  res.json({ token, user: userWithoutPass });
 });
 
 app.post('/api/auth/login', async (req, res) => {
-  const { email, password } = req.body;
-  
-  const { data: user, error } = await supabase.from('users').select('*').eq('email', email).single();
-  if (error || !user || !(await bcrypt.compare(password, user.password_hash))) {
-    return res.status(401).json({ error: 'Identifiants invalides' });
-  }
+  try {
+    const { email, password } = req.body;
+    
+    if (!supabaseUrl || supabaseUrl.includes('placeholder')) {
+      return res.status(500).json({ error: 'Le serveur Supabase n\'est pas configuré.' });
+    }
 
-  await supabase.from('users').update({ last_login: Date.now() }).eq('id', user.id);
-  
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET);
-  const { password_hash, ...userWithoutPass } = user;
-  res.json({ token, user: userWithoutPass });
+    const { data: user, error } = await supabase.from('users').select('*').eq('email', email).single();
+    if (error || !user || !(await bcrypt.compare(password, user.password_hash))) {
+      return res.status(401).json({ error: 'Identifiants invalides' });
+    }
+
+    await supabase.from('users').update({ last_login: Date.now() }).eq('id', user.id);
+    
+    const token = jwt.sign({ userId: user.id }, JWT_SECRET);
+    const { password_hash, ...userWithoutPass } = user;
+    res.json({ token, user: userWithoutPass });
+  } catch (err: any) {
+    console.error('Login Error:', err);
+    res.status(500).json({ error: err.message || 'Erreur lors de la connexion' });
+  }
 });
 
 // MVola Payment Logic
