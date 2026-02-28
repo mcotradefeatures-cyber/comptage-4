@@ -194,17 +194,17 @@ const AdminPage: React.FC<AdminPageProps> = ({ token, onClose, theme }) => {
               </thead>
               <tbody className="text-xs">
                 {users.map((u) => {
-                  const subEnd = u.subscriptionEnd || 0;
+                  const subEnd = u.subscription_end || 0;
                   const isSubscribed = subEnd > now;
                   
                   return (
                     <tr key={u.id} className="hover:bg-black/5 transition-colors">
                       <td className={`p-2 border-b ${tableBorder}`}>{u.email}</td>
                       <td className={`p-2 border-b ${tableBorder}`}>{u.mobile || '-'}</td>
-                      <td className={`p-2 border-b ${tableBorder}`}>{new Date(u.createdAt).toLocaleDateString()}</td>
+                      <td className={`p-2 border-b ${tableBorder}`}>{new Date(u.created_at).toLocaleDateString()}</td>
                       <td className={`p-2 border-b ${tableBorder}`}>
-                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${u.accountType === 'team' ? 'bg-purple-500/10 text-purple-500' : 'bg-blue-500/10 text-blue-500'}`}>
-                          {u.accountType}
+                        <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${u.account_type === 'team' ? 'bg-purple-500/10 text-purple-500' : 'bg-blue-500/10 text-blue-500'}`}>
+                          {u.account_type}
                         </span>
                       </td>
                       <td className={`p-2 border-b ${tableBorder}`}>
@@ -229,14 +229,14 @@ const AdminPage: React.FC<AdminPageProps> = ({ token, onClose, theme }) => {
                       <td className={`p-2 border-b ${tableBorder}`}>
                         <div className="flex gap-2">
                           <button 
-                            onClick={() => u.isBlacklisted && toggleBlacklist(u.id)}
-                            className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all ${!u.isBlacklisted ? 'bg-green-500 text-white shadow-[0_0_10px_rgba(34,197,94,0.3)]' : 'bg-gray-300 text-gray-500 opacity-50'}`}
+                            onClick={() => u.is_blacklisted && toggleBlacklist(u.id)}
+                            className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all ${!u.is_blacklisted ? 'bg-green-500 text-white shadow-[0_0_10px_rgba(34,197,94,0.3)]' : 'bg-gray-300 text-gray-500 opacity-50'}`}
                           >
                             Activé
                           </button>
                           <button 
-                            onClick={() => !u.isBlacklisted && toggleBlacklist(u.id)}
-                            className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all ${u.isBlacklisted ? 'bg-black text-white shadow-[0_0_10px_rgba(0,0,0,0.3)]' : 'bg-gray-300 text-gray-500 opacity-50'}`}
+                            onClick={() => !u.is_blacklisted && toggleBlacklist(u.id)}
+                            className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase transition-all ${u.is_blacklisted ? 'bg-black text-white shadow-[0_0_10px_rgba(0,0,0,0.3)]' : 'bg-gray-300 text-gray-500 opacity-50'}`}
                           >
                             Bloqué
                           </button>

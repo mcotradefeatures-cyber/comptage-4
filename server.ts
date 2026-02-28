@@ -4,6 +4,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createServer as createViteServer } from 'vite';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { createClient } from '@supabase/supabase-js';
 import { HistoryEntry, TableData } from './types';
 
 const app = express();
@@ -14,67 +15,93 @@ app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'comptage-mco-secret-key';
 
-// In-memory store
-const users: any[] = [
-  // Default admin account
-  {
-    id: 'admin-1',
-    email: 'admin@mco.mg',
-    passwordHash: bcrypt.hashSync('admin123', 10),
-    role: 'admin',
-    accountType: 'team',
-    createdAt: Date.now(),
-    companyName: 'ADMIN MCO'
-  },
-  // Default test account
-  {
-    id: 'test-1',
-    email: 'test@mco.mg',
-    passwordHash: bcrypt.hashSync('test123', 10),
-    role: 'user',
-    accountType: 'personal',
-    createdAt: Date.now(),
-    companyName: 'TEST COMPTE',
-    mobile: '034 11 222 33'
-  }
-];
+// Supabase Initialization
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_ANON_KEY;
 
-const userStates: Record<string, any> = {};
-let subscriptionPrice = 200; // Default price in Ar
+if (!supabaseUrl || !supabaseKey) {
+  console.error('ERREUR: SUPABASE_URL ou SUPABASE_ANON_KEY manquant dans les variables d\'environnement.');
+}
+
+const supabase = createClient(supabaseUrl || 'https://placeholder.supabase.co', supabaseKey || 'placeholder');
+
+// Helper to get subscription price
+async function getSubscriptionPrice() {
+  if (!supabaseUrl) return 200;
+  try {
+    const { data } = await supabase.from('config').select('value').eq('key', 'subscription_price').single();
+    return data ? Number(data.value) : 200;
+  } catch (e) {
+    return 200;
+  }
+}
+
+// Seed Admin User
+async function seedAdmin() {
+  const adminEmail = 'admin@mco.mg';
+  const { data: admin } = await supabase.from('users').select('id').eq('email', adminEmail).single();
+  
+  if (!admin) {
+    const passwordHash = await bcrypt.hash('admin123', 10);
+    const adminUser = {
+      id: 'admin-1',
+      email: adminEmail,
+      password_hash: passwordHash,
+      role: 'admin',
+      account_type: 'team',
+      created_at: Date.now(),
+      company_name: 'ADMIN MCO'
+    };
+    await supabase.from('users').insert([adminUser]);
+    console.log('Admin user seeded');
+  }
+}
+
+seedAdmin();
 
 // Auth Routes
 app.post('/api/auth/register', async (req, res) => {
   const { email, password, companyName, accountType, mobile } = req.body;
-  if (users.find(u => u.email === email)) {
+  
+  const { data: existingUser } = await supabase.from('users').select('id').eq('email', email).single();
+  if (existingUser) {
     return res.status(400).json({ error: 'Email déjà utilisé' });
   }
+
   const passwordHash = await bcrypt.hash(password, 10);
   const user = { 
     id: Date.now().toString(), 
     email, 
-    passwordHash, 
-    companyName, 
-    accountType: accountType || 'personal',
+    password_hash: passwordHash, 
+    company_name: companyName, 
+    account_type: accountType || 'personal',
     role: 'user',
-    createdAt: Date.now(),
-    subscriptionEnd: Date.now() + 30 * 60 * 1000,
+    created_at: Date.now(),
+    subscription_end: Date.now() + 30 * 60 * 1000,
     mobile
   };
-  users.push(user);
+
+  const { error } = await supabase.from('users').insert([user]);
+  if (error) return res.status(500).json({ error: error.message });
   
   const token = jwt.sign({ userId: user.id }, JWT_SECRET);
-  res.json({ token, user });
+  const { password_hash, ...userWithoutPass } = user;
+  res.json({ token, user: userWithoutPass });
 });
 
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
-  const user = users.find(u => u.email === email);
-  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
+  
+  const { data: user, error } = await supabase.from('users').select('*').eq('email', email).single();
+  if (error || !user || !(await bcrypt.compare(password, user.password_hash))) {
     return res.status(401).json({ error: 'Identifiants invalides' });
   }
-  user.lastLogin = Date.now();
+
+  await supabase.from('users').update({ last_login: Date.now() }).eq('id', user.id);
+  
   const token = jwt.sign({ userId: user.id }, JWT_SECRET);
-  res.json({ token, user });
+  const { password_hash, ...userWithoutPass } = user;
+  res.json({ token, user: userWithoutPass });
 });
 
 // MVola Payment Logic
@@ -114,22 +141,19 @@ app.post('/api/payment/mvola/initiate', async (req, res) => {
   const token = authHeader.split(' ')[1];
   try {
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    const user = users.find(u => u.id === decoded.userId);
+    const { data: user } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
     if (!user) return res.status(404).json({ error: 'Utilisateur non trouvé' });
 
-    const { phoneNumber } = req.body; // The user's MVola number
+    const { phoneNumber } = req.body;
     if (!phoneNumber) return res.status(400).json({ error: 'Numéro de téléphone requis' });
 
-    // 1. Get Token
     const mvolaToken = await getMVolaToken();
-
-    // 2. Initiate Payment (STK Push)
     const url = MVOLA_CONFIG.env === 'production'
       ? 'https://api.mvola.mg/mvola/mm/transactions/type/v1/merchantPay'
       : 'https://sandbox.mvola.mg/mvola/mm/transactions/type/v1/merchantPay';
 
     const correlationId = Date.now().toString();
-    const amount = subscriptionPrice;
+    const amount = await getSubscriptionPrice();
 
     const response = await fetch(url, {
       method: 'POST',
@@ -149,40 +173,16 @@ app.post('/api/payment/mvola/initiate', async (req, res) => {
         descriptionText: `Abonnement 1 mois - ${user.email}`,
         requestDate: new Date().toISOString(),
         transactionReference: `SUB-${user.id}-${Date.now()}`,
-        receiveParty: [
-          {
-            key: 'msisdn',
-            value: MVOLA_CONFIG.merchantNumber
-          }
-        ],
+        receiveParty: [{ key: 'msisdn', value: MVOLA_CONFIG.merchantNumber }],
         requestingOrganisationTransactionReference: `REQ-${user.id}-${Date.now()}`,
-        sendParty: [
-          {
-            key: 'msisdn',
-            value: phoneNumber.replace(/\s/g, '')
-          }
-        ],
-        metadata: [
-          {
-            key: 'userId',
-            value: user.id
-          }
-        ]
+        sendParty: [{ key: 'msisdn', value: phoneNumber.replace(/\s/g, '') }],
+        metadata: [{ key: 'userId', value: user.id }]
       })
     });
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('MVola Error:', errorData);
-      throw new Error('Erreur lors de l\'initiation du paiement MVola');
-    }
+    if (!response.ok) throw new Error('Erreur lors de l\'initiation du paiement MVola');
 
     const data = await response.json();
-    
-    // In a real scenario, we would wait for a callback.
-    // For this demo/implementation, we'll assume the user will confirm on their phone.
-    // We can provide a "Check Status" button or poll.
-    
     res.json({ 
       status: 'pending', 
       serverCorrelationId: data.serverCorrelationId,
@@ -190,95 +190,93 @@ app.post('/api/payment/mvola/initiate', async (req, res) => {
     });
 
   } catch (err: any) {
-    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Mock callback for manual testing or real integration
-app.post('/api/payment/mvola/callback', express.json(), (req, res) => {
-  const { status, serverCorrelationId, transactionReference, metadata } = req.body;
+app.post('/api/payment/mvola/callback', express.json(), async (req, res) => {
+  const { status, metadata } = req.body;
   
   if (status === 'completed') {
     const userId = metadata?.find((m: any) => m.key === 'userId')?.value;
-    const user = users.find(u => u.id === userId);
+    const { data: user } = await supabase.from('users').select('*').eq('id', userId).single();
     if (user) {
       const monthMs = 30 * 24 * 60 * 60 * 1000;
       const now = Date.now();
-      const start = Math.max(now, user.subscriptionEnd || 0);
-      user.subscriptionEnd = start + monthMs;
-      console.log(`Abonnement activé pour ${user.email} via MVola`);
+      const start = Math.max(now, user.subscription_end || 0);
+      const newEnd = start + monthMs;
       
-      // Notify connected clients
-      clients.get(userId)?.forEach(ws => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'user_update', user }));
-        }
-      });
+      const { data: updatedUser } = await supabase.from('users').update({ subscription_end: newEnd }).eq('id', userId).select().single();
+      
+      if (updatedUser) {
+        const { password_hash, ...userWithoutPass } = updatedUser;
+        clients.get(userId)?.forEach(ws => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'user_update', user: userWithoutPass }));
+          }
+        });
+      }
     }
   }
-  
   res.status(204).send();
 });
 
-app.get('/api/admin/users', (req, res) => {
+app.get('/api/admin/users', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Non autorisé' });
   
   try {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    const admin = users.find(u => u.id === decoded.userId);
+    const { data: admin } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
     if (!admin || admin.role !== 'admin') return res.status(403).json({ error: 'Accès refusé' });
     
-    // Filter out admin and return users
-    res.json(users
-      .filter(u => u.role !== 'admin')
-      .map(u => {
-        const { passwordHash, ...rest } = u;
-        return rest;
-      })
-    );
+    const { data: users } = await supabase.from('users').select('*').neq('role', 'admin');
+    res.json(users?.map(u => {
+      const { password_hash, ...rest } = u;
+      return rest;
+    }) || []);
   } catch (e) {
     res.status(401).json({ error: 'Token invalide' });
   }
 });
 
-// Public config
-app.get('/api/config', (req, res) => {
-  res.json({ subscriptionPrice });
+app.get('/api/config', async (req, res) => {
+  const price = await getSubscriptionPrice();
+  res.json({ subscriptionPrice: price });
 });
 
-app.get('/api/admin/config', (req, res) => {
+app.get('/api/admin/config', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Non autorisé' });
   
   try {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    const admin = users.find(u => u.id === decoded.userId);
+    const { data: admin } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
     if (!admin || admin.role !== 'admin') return res.status(403).json({ error: 'Accès refusé' });
     
-    res.json({ subscriptionPrice });
+    const price = await getSubscriptionPrice();
+    res.json({ subscriptionPrice: price });
   } catch (e) {
     res.status(401).json({ error: 'Token invalide' });
   }
 });
 
-app.post('/api/admin/update-config', (req, res) => {
+app.post('/api/admin/update-config', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Non autorisé' });
   
   try {
     const token = authHeader.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    const admin = users.find(u => u.id === decoded.userId);
+    const { data: admin } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
     if (!admin || admin.role !== 'admin') return res.status(403).json({ error: 'Accès refusé' });
     
     const { price } = req.body;
     if (typeof price === 'number' && price >= 0) {
-      subscriptionPrice = price;
-      res.json({ success: true, subscriptionPrice });
+      await supabase.from('config').upsert({ key: 'subscription_price', value: price.toString() });
+      res.json({ success: true, subscriptionPrice: price });
     } else {
       res.status(400).json({ error: 'Prix invalide' });
     }
@@ -287,80 +285,80 @@ app.post('/api/admin/update-config', (req, res) => {
   }
 });
 
-app.post('/api/admin/update-subscription', (req, res) => {
+app.post('/api/admin/update-subscription', async (req, res) => {
   const authHeader = req.headers.authorization;
   const { userId, action } = req.body;
   
   try {
     const token = authHeader!.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    const admin = users.find(u => u.id === decoded.userId);
+    const { data: admin } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
     if (!admin || admin.role !== 'admin') return res.status(403).json({ error: 'Accès refusé' });
     
-    const user = users.find(u => u.id === userId);
+    const { data: user } = await supabase.from('users').select('*').eq('id', userId).single();
     if (!user) return res.status(404).json({ error: 'Utilisateur non trouvé' });
     
     const monthMs = 30 * 24 * 60 * 60 * 1000;
     const minuteMs = 60 * 1000;
     const now = Date.now();
+    let newEnd = user.subscription_end;
 
     if (action === '1min') {
-      user.subscriptionEnd = now + minuteMs;
+      newEnd = now + minuteMs;
     } else if (action.endsWith('m')) {
       const months = parseInt(action);
-      const start = Math.max(now, user.subscriptionEnd || 0);
-      user.subscriptionEnd = start + (months * monthMs);
+      const start = Math.max(now, user.subscription_end || 0);
+      newEnd = start + (months * monthMs);
     } else if (action === 'couper') {
-      user.subscriptionEnd = now;
+      newEnd = now;
     }
     
-    res.json({ success: true, subscriptionEnd: user.subscriptionEnd });
+    await supabase.from('users').update({ subscription_end: newEnd }).eq('id', userId);
+    res.json({ success: true, subscriptionEnd: newEnd });
   } catch (e) {
     res.status(401).json({ error: 'Erreur' });
   }
 });
 
-app.post('/api/admin/delete-user', (req, res) => {
+app.post('/api/admin/delete-user', async (req, res) => {
   const authHeader = req.headers.authorization;
   const { userId } = req.body;
   try {
     const token = authHeader!.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    const admin = users.find(u => u.id === decoded.userId);
+    const { data: admin } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
     if (!admin || admin.role !== 'admin') return res.status(403).json({ error: 'Accès refusé' });
     
-    const index = users.findIndex(u => u.id === userId);
-    if (index !== -1) {
-      users.splice(index, 1);
-      delete userStates[userId];
-      // Close connections
-      clients.get(userId)?.forEach(ws => ws.close());
-      clients.delete(userId);
-    }
+    await supabase.from('users').delete().eq('id', userId);
+    clients.get(userId)?.forEach(ws => ws.close());
+    clients.delete(userId);
     res.json({ success: true });
   } catch (e) {
     res.status(401).json({ error: 'Erreur' });
   }
 });
 
-app.post('/api/admin/toggle-blacklist', (req, res) => {
+app.post('/api/admin/toggle-blacklist', async (req, res) => {
   const authHeader = req.headers.authorization;
   const { userId } = req.body;
   try {
     const token = authHeader!.split(' ')[1];
     const decoded = jwt.verify(token, JWT_SECRET) as any;
-    const admin = users.find(u => u.id === decoded.userId);
+    const { data: admin } = await supabase.from('users').select('*').eq('id', decoded.userId).single();
     if (!admin || admin.role !== 'admin') return res.status(403).json({ error: 'Accès refusé' });
     
-    const user = users.find(u => u.id === userId);
+    const { data: user } = await supabase.from('users').select('*').eq('id', userId).single();
     if (user) {
-      user.isBlacklisted = !user.isBlacklisted;
-      if (user.isBlacklisted) {
+      const newStatus = !user.is_blacklisted;
+      await supabase.from('users').update({ is_blacklisted: newStatus }).eq('id', userId);
+      if (newStatus) {
         clients.get(userId)?.forEach(ws => ws.close());
         clients.delete(userId);
       }
+      res.json({ success: true, isBlacklisted: newStatus });
+    } else {
+      res.status(404).json({ error: 'Non trouvé' });
     }
-    res.json({ success: true, isBlacklisted: user?.isBlacklisted });
   } catch (e) {
     res.status(401).json({ error: 'Erreur' });
   }
@@ -372,25 +370,23 @@ const clients = new Map<string, Set<WebSocket>>();
 wss.on('connection', (ws, req) => {
   let userId: string | null = null;
 
-  ws.on('message', (message) => {
+  ws.on('message', async (message) => {
     const data = JSON.parse(message.toString());
 
     if (data.type === 'auth') {
       try {
         const decoded = jwt.verify(data.token, JWT_SECRET) as any;
         userId = decoded.userId;
-        const user = users.find(u => u.id === userId);
+        const { data: user } = await supabase.from('users').select('*').eq('id', userId).single();
         
         if (userId && user) {
-          if (user.isBlacklisted) {
+          if (user.is_blacklisted) {
             ws.send(JSON.stringify({ type: 'error', message: 'Votre compte est sur liste noire.' }));
             ws.close();
             return;
           }
           const currentClients = clients.get(userId) || new Set();
-          
-          // Check limits
-          const limit = user.accountType === 'team' ? 5 : 1;
+          const limit = user.account_type === 'team' ? 5 : 1;
           if (currentClients.size >= limit && user.role !== 'admin') {
             ws.send(JSON.stringify({ type: 'error', message: `Limite de connexion atteinte (${limit} max)` }));
             ws.close();
@@ -400,9 +396,9 @@ wss.on('connection', (ws, req) => {
           if (!clients.has(userId)) clients.set(userId, new Set());
           clients.get(userId)!.add(ws);
           
-          // Send initial state if exists
-          if (userStates[userId]) {
-            ws.send(JSON.stringify({ type: 'init', state: userStates[userId] }));
+          const { data: stateData } = await supabase.from('user_data').select('state').eq('user_id', userId).single();
+          if (stateData) {
+            ws.send(JSON.stringify({ type: 'init', state: stateData.state }));
           }
         }
       } catch (e) {
@@ -411,8 +407,7 @@ wss.on('connection', (ws, req) => {
     }
 
     if (data.type === 'update' && userId) {
-      userStates[userId] = data.state;
-      // Broadcast to other clients of the same user
+      await supabase.from('user_data').upsert({ user_id: userId, state: data.state });
       clients.get(userId)?.forEach(client => {
         if (client !== ws && client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({ type: 'update', state: data.state }));
@@ -429,7 +424,6 @@ wss.on('connection', (ws, req) => {
   });
 });
 
-// Vite middleware for development
 async function setupVite() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

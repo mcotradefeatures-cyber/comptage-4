@@ -20,15 +20,15 @@ export interface HistoryEntry {
 export interface User {
   id: string;
   email: string;
-  passwordHash: string;
-  companyName?: string;
+  password_hash?: string;
+  company_name?: string;
   role: 'admin' | 'user';
-  accountType: 'personal' | 'team';
-  createdAt: number;
-  lastLogin?: number;
-  subscriptionEnd?: number;
+  account_type: 'personal' | 'team';
+  created_at: number;
+  last_login?: number;
+  subscription_end?: number;
   mobile?: string;
-  isBlacklisted?: boolean;
+  is_blacklisted?: boolean;
 }
 
 export interface AuthResponse {

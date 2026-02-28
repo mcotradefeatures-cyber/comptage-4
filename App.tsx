@@ -202,7 +202,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (user && user.role !== 'admin') {
-      const subEnd = user.subscriptionEnd || 0;
+      const subEnd = user.subscription_end || 0;
       const isSubscribed = subEnd > Date.now();
       
       if (!isSubscribed) {
@@ -219,7 +219,7 @@ const App: React.FC = () => {
     setToken(token);
     setUser(user);
     localStorage.setItem('count_pro_auth', JSON.stringify({ token, user }));
-    if (user.companyName) setCompanyName(user.companyName);
+    if (user.company_name) setCompanyName(user.company_name);
   };
 
   const handleLogout = () => {
