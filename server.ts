@@ -11,23 +11,20 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
+console.log('NODE_ENV:', process.env.NODE_ENV);
+
 app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'comptage-mco-secret-key';
 
 // Supabase Initialization
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.SUPABASE_URL || 'https://doygmzbgtiaylwfspsdf.supabase.co';
+const supabaseKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRveWdtemJndGlheWx3ZnNwc2RmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzIzMTYxODMsImV4cCI6MjA4Nzg5MjE4M30.yYba9R9k2hl956hPr1KnLNCPPqplSaBZqKat6WtMkMg';
 
-if (!supabaseUrl || !supabaseKey) {
-  console.error('ERREUR: SUPABASE_URL ou SUPABASE_ANON_KEY manquant dans les variables d\'environnement.');
-}
-
-const supabase = createClient(supabaseUrl || 'https://placeholder.supabase.co', supabaseKey || 'placeholder');
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Helper to get subscription price
 async function getSubscriptionPrice() {
-  if (!supabaseUrl) return 200;
   try {
     const { data } = await supabase.from('config').select('value').eq('key', 'subscription_price').single();
     return data ? Number(data.value) : 200;
