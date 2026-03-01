@@ -11,9 +11,26 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
-console.log('NODE_ENV:', process.env.NODE_ENV);
+// Force development mode for the preview environment
+process.env.NODE_ENV = 'development';
+console.log('Server starting in FORCE DEVELOPMENT mode');
 
 app.use(express.json());
+
+// Logging middleware
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  // Disable caching for all requests to prevent stale content
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
+// Health check route - must be first
+app.get('/api/ping', (req, res) => {
+  res.json({ status: 'ok', time: Date.now(), env: process.env.NODE_ENV });
+});
 
 const JWT_SECRET = process.env.JWT_SECRET || 'comptage-mco-secret-key';
 
@@ -440,23 +457,31 @@ wss.on('connection', (ws, req) => {
 });
 
 async function setupVite() {
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    app.use(express.static('dist'));
-    app.get('*', (req, res) => {
-      res.sendFile('dist/index.html', { root: '.' });
-    });
-  }
+  console.log('Setting up Vite middleware...');
+  const vite = await createViteServer({
+    server: { middlewareMode: true },
+    appType: 'spa',
+  });
+  
+  // API routes MUST be registered BEFORE vite.middlewares
+  // (They already are in the code above, but we'll double check)
+  
+  app.use(vite.middlewares);
+  console.log('Vite middleware ready.');
 }
 
-setupVite().then(() => {
-  const PORT = 3000;
-  server.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+// Export for Vercel Serverless Functions
+export default app;
+
+// Only listen if not in serverless environment
+if (process.env.NODE_ENV !== 'production' || !process.env.VERCEL) {
+  setupVite().then(() => {
+    const PORT = 3000;
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on http://0.0.0.0:${PORT}`);
+    });
   });
-});
+} else {
+  // In Vercel production, we still need to setup routes but not app.listen
+  setupVite();
+}
